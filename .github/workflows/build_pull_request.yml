@@ -42,7 +42,7 @@ jobs:
           fi
 
       - name: Restore release keystore
-        if: steps.fork_check.outputs.is_fork == 'false' && secrets.KEYSTORE_B64 != ''
+        if: steps.fork_check.outputs.is_fork == 'false'
         run: |
           echo "${{ secrets.KEYSTORE_B64 }}" | base64 -d > app/keystore.jks
           ls -la app/keystore.jks
