@@ -1,10 +1,13 @@
-name: Build pull request
+name: Build APK
 
 on:
   workflow_dispatch:
   pull_request:
     branches:
       - dev
+  push:
+    branches:
+      - main
 
 concurrency:
   group: compile-${{ github.ref }}
@@ -18,18 +21,18 @@ jobs:
       - name: Checkout code
         uses: actions/checkout@v7
 
-      # Fork PRs cannot access repository secrets by design, so we detect them
-      # here and fall back to an unsigned debug build instead of a signed release.
+      # Fork PRs or repos without keystore secrets fall back to an unsigned/debug build
       - name: Determine if PR is from a fork
         id: fork_check
+        env:
+          KEYSTORE_B64: ${{ secrets.KEYSTORE_B64 }}
         run: |
-          if [ "${{ github.event_name }}" = "pull_request" ] \
-             && [ "${{ github.event.pull_request.head.repo.fork }}" = "true" ]; then
+          if [ -z "$KEYSTORE_B64" ] || ([ "${{ github.event_name }}" = "pull_request" ] && [ "${{ github.event.pull_request.head.repo.fork }}" = "true" ]); then
             echo "is_fork=true" >> "$GITHUB_OUTPUT"
             echo "gradle_task=assembleDebug" >> "$GITHUB_OUTPUT"
             echo "apk_dir=app/build/outputs/apk/debug" >> "$GITHUB_OUTPUT"
             echo "apk_suffix=-debug" >> "$GITHUB_OUTPUT"
-            echo "PR from fork detected: building unsigned debug APK"
+            echo "No keystore secret or PR from fork: building debug APK"
           else
             echo "is_fork=false" >> "$GITHUB_OUTPUT"
             echo "gradle_task=assembleRelease" >> "$GITHUB_OUTPUT"
@@ -39,7 +42,7 @@ jobs:
           fi
 
       - name: Restore release keystore
-        if: steps.fork_check.outputs.is_fork == 'false'
+        if: steps.fork_check.outputs.is_fork == 'false' && secrets.KEYSTORE_B64 != ''
         run: |
           echo "${{ secrets.KEYSTORE_B64 }}" | base64 -d > app/keystore.jks
           ls -la app/keystore.jks
