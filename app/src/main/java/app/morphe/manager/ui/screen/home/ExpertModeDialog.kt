@@ -376,13 +376,10 @@ fun DialogHostScope.ExpertModeDialog(
                     }
                 } else null
             ) {
-                // Select all patches of the current patch source
+                // Drop-down button for patch selection of current patch source
                 headBundle?.let { bundle ->
                     val patches = filteredPatchesByUid[bundle.uid].orEmpty()
                     val holdsUniversal = holdsUniversalPatches(bundle.uid, patches)
-                    val canEnableMore = patches.any { (patch, isEnabled) ->
-                        !isEnabled && lockStateOf(patch) != PatchLockState.LOCKED_OFF
-                    }
                     val warnOnUniversalAll = !holdsUniversal && patches.hasUniversalToEnable(lockStateOf)
 
                     val selectAll = {
@@ -391,15 +388,38 @@ fun DialogHostScope.ExpertModeDialog(
                         if (holdsUniversal) messages.show(pendingUniversalMessage)
                     }
 
-                    TitleAction(
-                        icon = MaterialSymbols.Rounded.Done_all,
-                        contentDescription = stringResource(R.string.select_all),
-                        onClick = {
-                            if (warnOnUniversalAll) showUniversalAllWarning.value = true else selectAll()
-                        },
-                        style = TitleActionStyle.Neutral,
-                        enabled = canEnableMore
-                    )
+                    var showDropdownMenu by remember { mutableStateOf(false) }
+
+                    Box {
+                        TitleAction(
+                            icon = MaterialSymbols.Rounded.Arrow_drop_down,
+                            contentDescription = stringResource(R.string.select_options),
+                            onClick = { showDropdownMenu = true },
+                            style = TitleActionStyle.Toggle,
+                            active = showDropdownMenu
+                        )
+                        AppDropdownMenu(
+                            expanded = showDropdownMenu,
+                            onDismissRequest = { showDropdownMenu = false }
+                        ) {
+                            AppDropdownMenuItem(
+                                text = stringResource(R.string.select_all),
+                                leadingIcon = MaterialSymbols.Rounded.Done_all,
+                                onClick = {
+                                    showDropdownMenu = false
+                                    if (warnOnUniversalAll) showUniversalAllWarning.value = true else selectAll()
+                                }
+                            )
+                            AppDropdownMenuItem(
+                                text = stringResource(R.string.select_none),
+                                leadingIcon = MaterialSymbols.Rounded.Remove_done,
+                                onClick = {
+                                    showDropdownMenu = false
+                                    patchActions.onDeselectAll(bundle.uid, patches)
+                                }
+                            )
+                        }
+                    }
                 }
 
                 // Narrows how the list is shown rather than what is selected, so it stays in view
