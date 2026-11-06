@@ -829,7 +829,7 @@ class HomeViewModel(
     fun handleExternalApkUri(uri: Uri) {
         viewModelScope.launch {
             if (!prefs.useExpertMode.get()) {
-                prefs.useExpertMode.set(true)
+                prefs.useExpertMode.update(true)
             }
             // Wait for patches to be ready, capped in case the sources never answer
             withTimeoutOrNull(30.seconds) {
