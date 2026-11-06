@@ -1448,6 +1448,8 @@ Details: %2$s"</string>
     <string name="select_all">Select all</string>
     <string name="deselect_all">Deselect all</string>
     <string name="select_none">Select none</string>
+    <string name="show_non_selected">Show non-selected</string>
+    <string name="new_patches">New patches</string>
     <string name="select_options">Select options</string>
     <string name="reorder_list">Reorder list</string>
     <string name="reorder_list_hint">Drag to reorder</string>

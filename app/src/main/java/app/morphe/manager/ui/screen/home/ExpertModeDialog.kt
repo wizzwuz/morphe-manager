@@ -143,6 +143,12 @@ fun expertSelectionPanel(host: SelectionPanelHost): ExpertSelectionPanel {
  * @param appName Name to head the dialog with, as the rest of the run names the app.
  * @param appIcon Icon for the header where no source has one, as for a file picked from storage.
  */
+private enum class PatchSortMode {
+    DEFAULT,
+    SHOW_NON_SELECTED,
+    NEW_PATCHES
+}
+
 @Composable
 fun DialogHostScope.ExpertModeDialog(
     packageName: String,
@@ -203,6 +209,7 @@ fun DialogHostScope.ExpertModeDialog(
     // Names the filter holds on to, or null while it is off. A snapshot rather than a live read,
     // so a patch unticked under the filter keeps its place instead of vanishing mid-edit
     val selectedOnly = remember { mutableStateOf<Map<Int, Set<String>>?>(null) }
+    var sortMode by remember { mutableStateOf(PatchSortMode.DEFAULT) }
     val isSelectedOnly = selectedOnly.value != null
     fun toggleSelectedOnly() {
         selectedOnly.value = if (isSelectedOnly) {
@@ -418,6 +425,30 @@ fun DialogHostScope.ExpertModeDialog(
                                     patchActions.onDeselectAll(bundle.uid, patches)
                                 }
                             )
+                            AppDropdownMenuItem(
+                                text = stringResource(R.string.show_non_selected),
+                                leadingIcon = MaterialSymbols.Rounded.Filter_list,
+                                onClick = {
+                                    showDropdownMenu = false
+                                    sortMode = if (sortMode == PatchSortMode.SHOW_NON_SELECTED) {
+                                        PatchSortMode.DEFAULT
+                                    } else {
+                                        PatchSortMode.SHOW_NON_SELECTED
+                                    }
+                                }
+                            )
+                            AppDropdownMenuItem(
+                                text = stringResource(R.string.new_patches),
+                                leadingIcon = MaterialSymbols.Rounded.Auto_fix_high,
+                                onClick = {
+                                    showDropdownMenu = false
+                                    sortMode = if (sortMode == PatchSortMode.NEW_PATCHES) {
+                                        PatchSortMode.DEFAULT
+                                    } else {
+                                        PatchSortMode.NEW_PATCHES
+                                    }
+                                }
+                            )
                         }
                     }
                 }
@@ -552,6 +583,7 @@ fun DialogHostScope.ExpertModeDialog(
                     listState = singleBundleList,
                     markers = markers,
                     isFiltering = isFiltering,
+                    sortMode = sortMode,
                     sectionState = patchSections,
                     lockStateOf = lockStateOf,
                     patchActions = patchActions,
@@ -582,6 +614,7 @@ fun DialogHostScope.ExpertModeDialog(
                         listState = listState,
                         markers = markers,
                         isFiltering = isFiltering,
+                        sortMode = sortMode,
                         sectionState = patchSections,
                         lockStateOf = lockStateOf,
                         patchActions = patchActions,
@@ -849,6 +882,7 @@ private fun BundlePatchList(
     listState: LazyListState,
     markers: PatchMarkers,
     isFiltering: Boolean,
+    sortMode: PatchSortMode = PatchSortMode.DEFAULT,
     sectionState: PatchSectionState,
     lockStateOf: (PatchInfo) -> PatchLockState,
     patchActions: ExpertPatchActions,
@@ -860,11 +894,22 @@ private fun BundlePatchList(
     val newPatchNames = markers.newPatches[bundle.uid].orEmpty()
     val missingRequiredOptions = markers.missingRequiredOptions[bundle.uid].orEmpty()
     val customOptions = markers.customOptions[bundle.uid].orEmpty()
-    // New patches float to the top of each block; within a block the order is alphabetical
-    val ordered = remember(patches, newPatchNames) {
-        val displayOrder = compareByDescending<Pair<PatchInfo, Boolean>> { (patch, _) ->
-            patch.name in newPatchNames
-        }.thenBy { (patch, _) -> patch.name }
+    // Order patches based on active sortMode
+    val ordered = remember(patches, newPatchNames, sortMode) {
+        val displayOrder = when (sortMode) {
+            PatchSortMode.SHOW_NON_SELECTED -> {
+                compareBy<Pair<PatchInfo, Boolean>> { (_, isEnabled) -> isEnabled }
+                    .thenByDescending { (patch, _) -> patch.name in newPatchNames }
+                    .thenBy { (patch, _) -> patch.name }
+            }
+            PatchSortMode.NEW_PATCHES -> {
+                compareByDescending<Pair<PatchInfo, Boolean>> { (patch, _) -> patch.name in newPatchNames }
+                    .thenBy { (patch, _) -> patch.name }
+            }
+            PatchSortMode.DEFAULT -> {
+                compareBy<Pair<PatchInfo, Boolean>> { (patch, _) -> patch.name }
+            }
+        }
         patches.sortedWith(displayOrder)
     }
     val groups = rememberPatchGroups(

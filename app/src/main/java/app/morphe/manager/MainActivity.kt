@@ -303,12 +303,13 @@ class MainActivity : ComponentActivity() {
 
         val data = intent?.data ?: return
 
-        // Handle .mpp file open from file manager
+        // Handle .mpp or APK-family file open from file manager
         if (intent.action == Intent.ACTION_VIEW && data.scheme in listOf("file", "content")) {
             if (data.hasMppExtension(contentResolver)) {
                 vm.pendingMppUri = data
+            } else {
+                vm.pendingExternalApkUri = data
             }
-            // Not .mpp - don't process further regardless
             return
         }
 

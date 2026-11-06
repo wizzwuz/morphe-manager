@@ -117,6 +117,38 @@
                 <data android:mimeType="application/vnd.ms-project" />
             </intent-filter>
 
+            <!-- Open APK-family files from file managers / Open with -->
+            <intent-filter tools:ignore="AppLinkUrlError">
+                <action android:name="android.intent.action.VIEW" />
+                <category android:name="android.intent.category.DEFAULT" />
+                <category android:name="android.intent.category.BROWSABLE" />
+                <data android:scheme="file" />
+                <data android:scheme="content" />
+                <data android:mimeType="application/vnd.android.package-archive" />
+                <data android:mimeType="application/octet-stream" />
+                <data android:mimeType="application/x-apkm" />
+                <data android:mimeType="application/x-apks" />
+                <data android:mimeType="application/x-xapk" />
+                <data android:mimeType="application/xapk" />
+                <data android:mimeType="application/vnd.android.xapk" />
+                <data android:mimeType="application/vnd.android.apkm" />
+                <data android:mimeType="application/apkm" />
+                <data android:mimeType="application/vnd.android.apks" />
+                <data android:mimeType="application/apks" />
+            </intent-filter>
+            <intent-filter tools:ignore="AppLinkUrlError">
+                <action android:name="android.intent.action.VIEW" />
+                <category android:name="android.intent.category.DEFAULT" />
+                <category android:name="android.intent.category.BROWSABLE" />
+                <data android:scheme="file" />
+                <data android:scheme="content" />
+                <data android:host="*" />
+                <data android:pathPattern=".*\\.apk" />
+                <data android:pathPattern=".*\\.xapk" />
+                <data android:pathPattern=".*\\.apkm" />
+                <data android:pathPattern=".*\\.apks" />
+            </intent-filter>
+
             <!-- Receive APK-family files shared via system share sheet (Expert mode) -->
             <intent-filter>
                 <action android:name="android.intent.action.SEND" />
