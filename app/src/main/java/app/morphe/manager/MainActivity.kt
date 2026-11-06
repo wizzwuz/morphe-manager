@@ -244,6 +244,14 @@ class MainActivity : ComponentActivity() {
             return
         }
 
+        // Launcher shortcut for one app: opens the usual patch dialog for it
+        if (intent?.action == ACTION_PATCH_APP) {
+            intent.getStringExtra(EXTRA_PATCH_PACKAGE)
+                ?.takeIf { it.isNotBlank() }
+                ?.let { vm.pendingPatchPackage = it }
+            return
+        }
+
         // Notification opening an app's info dialog (e.g. mount replaced)
         if (intent?.action == ACTION_SHOW_APP_INFO) {
             intent.getStringExtra(EXTRA_APP_INFO_PACKAGE)
@@ -300,7 +308,34 @@ class MainActivity : ComponentActivity() {
             if (data.hasMppExtension(contentResolver)) {
                 vm.pendingMppUri = data
             } else {
-                vm.pendingExternalApkUri = data
+                val safeUri = try {
+                    val stream = runCatching {
+                        if (data.scheme == "file") {
+                            data.path?.let { java.io.FileInputStream(it) }
+                        } else {
+                            contentResolver.openInputStream(data)
+                        }
+                    }.getOrNull() ?: runCatching {
+                        intent.clipData?.takeIf { it.itemCount > 0 }?.getItemAt(0)?.uri?.let { clipUri ->
+                            contentResolver.openInputStream(clipUri)
+                        }
+                    }.getOrNull()
+
+                    if (stream != null) {
+                        val tempDir = File(cacheDir, "incoming_apks").apply { mkdirs() }
+                        val rawExt = (data.lastPathSegment ?: "").substringAfterLast('.', "apk").lowercase()
+                        val ext = if (rawExt in setOf("apk", "xapk", "apkm", "apks")) rawExt else "apk"
+                        val tempFile = File(tempDir, "opened_apk_${System.currentTimeMillis()}.$ext")
+                        stream.use { input ->
+                            tempFile.outputStream().use { output -> input.copyTo(output) }
+                        }
+                        if (tempFile.length() > 0) Uri.fromFile(tempFile) else data
+                    } else data
+                } catch (e: Exception) {
+                    Log.e(tag, "Failed to cache incoming APK in MainActivity", e)
+                    data
+                }
+                vm.pendingExternalApkUri = safeUri
             }
             return
         }
@@ -332,6 +367,9 @@ class MainActivity : ComponentActivity() {
         /** Identifies the launcher shortcut an intent came from, for usage reporting. */
         const val EXTRA_SHORTCUT_ID = "shortcut_id"
 
+        /** Action behind the per-app launcher shortcuts. */
+        const val ACTION_PATCH_APP = "app.morphe.manager.action.PATCH_APP"
+
         /** Action behind the update check shortcut. Shortcut intents must carry one. */
         const val ACTION_CHECK_UPDATES = "app.morphe.manager.action.CHECK_UPDATES"
 
@@ -346,6 +384,9 @@ class MainActivity : ComponentActivity() {
 
         /** Action behind the changelog button of a manager update notification. */
         const val ACTION_SHOW_MANAGER_CHANGELOG = "app.morphe.manager.action.SHOW_MANAGER_CHANGELOG"
+
+        /** Package the per-app shortcut opens the patch dialog for. */
+        const val EXTRA_PATCH_PACKAGE = "patch_package"
 
         /** Action behind a notification opening an app's info dialog. */
         const val ACTION_SHOW_APP_INFO = "app.morphe.manager.action.SHOW_APP_INFO"
@@ -425,6 +466,16 @@ private fun MorpheManager(vm: MainViewModel) {
             onDismiss = { vm.pendingManagerChangelog = false },
             expectsUpdate = true
         )
+    }
+
+    // Per-app shortcut reuses the trigger the installed-app dialog already goes through
+    LaunchedEffect(vm.pendingPatchPackage) {
+        vm.pendingPatchPackage?.let { packageName ->
+            vm.pendingPatchPackage = null
+            navController.popBackStack(HomeScreen, false)
+            navController.getBackStackEntry(HomeScreen)
+                .savedStateHandle["patch_trigger_package"] = packageName
+        }
     }
 
     LaunchedEffect(vm.pendingAppInfoPackage) {
@@ -588,6 +639,8 @@ private fun MorpheManager(vm: MainViewModel) {
         ) {
             composable<HomeScreen> { entry ->
                 val bundleUpdateProgress by homeViewModel.bundleUpdateProgress.collectAsStateWithLifecycle(null)
+                val patchTriggerPackage by entry.savedStateHandle.getStateFlow<String?>("patch_trigger_package", null)
+                    .collectAsStateWithLifecycle()
                 val appInfoTriggerPackage by entry.savedStateHandle.getStateFlow<String?>("app_info_trigger_package", null)
                     .collectAsStateWithLifecycle()
 
@@ -618,6 +671,10 @@ private fun MorpheManager(vm: MainViewModel) {
                     },
                     homeViewModel = homeViewModel,
                     bundleUpdateProgress = bundleUpdateProgress,
+                    patchTriggerPackage = patchTriggerPackage,
+                    onPatchTriggerHandled = {
+                        entry.savedStateHandle["patch_trigger_package"] = null
+                    },
                     appInfoTriggerPackage = appInfoTriggerPackage,
                     onAppInfoTriggerHandled = {
                         entry.savedStateHandle["app_info_trigger_package"] = null

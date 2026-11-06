@@ -87,27 +87,37 @@ fun Uri.toFilePath(): String {
 
 /** The name a URI is shown under, or its last path segment where the provider gives none. */
 fun Uri.displayName(contentResolver: ContentResolver): String? =
-    runCatching {
-        contentResolver.query(this, arrayOf(OpenableColumns.DISPLAY_NAME), null, null, null)
-            ?.use { cursor ->
-                val col = cursor.getColumnIndex(OpenableColumns.DISPLAY_NAME)
-                if (col != -1 && cursor.moveToFirst()) cursor.getString(col) else null
-            }
-    }.getOrNull() ?: lastPathSegment
+    if (scheme == "file") {
+        lastPathSegment
+    } else {
+        runCatching {
+            contentResolver.query(this, arrayOf(OpenableColumns.DISPLAY_NAME), null, null, null)
+                ?.use { cursor ->
+                    val col = cursor.getColumnIndex(OpenableColumns.DISPLAY_NAME)
+                    if (col != -1 && cursor.moveToFirst()) cursor.getString(col) else null
+                }
+        }.getOrNull() ?: lastPathSegment
+    }
 
 /**
  * Copies the APK behind this URI to a new file in [dir], named [prefix] plus the extension it is
  * shown under. Null when the provider has nothing to read, and a copy cut short is deleted.
  */
 fun Uri.copyApkInto(dir: File, prefix: String, contentResolver: ContentResolver): File? {
-    val extension = displayName(contentResolver)?.substringAfterLast('.', "apk")?.lowercase() ?: "apk"
+    val rawExt = displayName(contentResolver)?.substringAfterLast('.', "apk")?.lowercase() ?: "apk"
+    val extension = if (rawExt in setOf("apk", "xapk", "apkm", "apks")) rawExt else "apk"
     val target = dir.resolve("${prefix}_${System.currentTimeMillis()}.$extension")
     val copied = try {
-        // Null when the provider is unavailable, e.g. Samsung storage held back by battery optimization
-        contentResolver.openInputStream(this)?.use { input ->
+        val stream = if (scheme == "file") {
+            path?.let { java.io.FileInputStream(it) }
+        } else {
+            contentResolver.openInputStream(this)
+        }
+        stream?.use { input ->
             target.outputStream().use { output -> input.copyTo(output) }
         }
     } catch (e: Exception) {
+        Log.e("FilePickerUtils", "Failed to copy APK from $this", e)
         target.delete()
         throw e
     }
