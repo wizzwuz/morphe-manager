@@ -51,6 +51,7 @@ import app.morphe.patcher.patch.AppTarget
 import app.morphe.patcher.patch.InstallerType
 import kotlinx.coroutines.*
 import kotlinx.coroutines.flow.StateFlow
+import kotlinx.coroutines.flow.filterIsInstance
 import kotlinx.coroutines.flow.first
 import java.io.File
 
@@ -699,7 +700,7 @@ class PatchFlow(
                             if (current.packageName == null) {
                                 current.copy(appName = appNameFor(result.app.packageName))
                             } else current
-                        }
+                        } ?: PatchFlowSession(packageName = result.app.packageName, appName = appNameFor(result.app.packageName))
                         // Picked in place of the one held for a warning, which it takes the run over from
                         heldApp?.discard()
                         heldApp = null
@@ -849,6 +850,7 @@ class PatchFlow(
         // Scoped.compatible = version matches, Scoped.incompatible = package matches but wrong version,
         // Scoped.universal = compatiblePackages == null (applies to any package/version).
         val bundles = withContext(Dispatchers.IO) {
+            patchBundleRepository.bundleState.filterIsInstance<PatchBundleRepository.BundleState.Ready>().first()
             patchBundleRepository.resolvingBundleInfo(
                 selectedApp.packageName, selectedApp.version, selectedApp.versionCode, chosenBundleUidFor(selectedApp)
             )
@@ -1050,9 +1052,12 @@ class PatchFlow(
 
         // Everything this app has patches in, the sources it is kept from included: the expert
         // dialog offers those back, so it has to be told what it is hiding
-        val availableBundles = patchBundleRepository
-            .scopedBundleInfoFlow(selectedApp.packageName, selectedApp.version, selectedApp.versionCode)
-            .first()
+        val availableBundles = withContext(Dispatchers.IO) {
+            patchBundleRepository.bundleState.filterIsInstance<PatchBundleRepository.BundleState.Ready>().first()
+            patchBundleRepository
+                .scopedBundleInfoFlow(selectedApp.packageName, selectedApp.version, selectedApp.versionCode)
+                .first()
+        }
 
         if (availableBundles.isEmpty()) {
             messages.show(R.string.home_no_patches_available)

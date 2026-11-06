@@ -831,9 +831,9 @@ class HomeViewModel(
             if (!prefs.useExpertMode.get()) {
                 prefs.useExpertMode.update(true)
             }
-            // Wait for patches to be ready, capped in case the sources never answer
-            withTimeoutOrNull(30.seconds) {
-                snapshotFlow { installedAppsLoading }.first { !it }
+            // Wait for patch bundle repository to load cached sources from local database
+            withTimeoutOrNull(5.seconds) {
+                patchBundleRepository.bundleState.filterIsInstance<PatchBundleRepository.BundleState.Ready>().first()
             }
             patchFlow.handleApkSelection(uri)
         }

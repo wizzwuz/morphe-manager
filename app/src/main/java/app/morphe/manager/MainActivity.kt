@@ -301,10 +301,10 @@ class MainActivity : ComponentActivity() {
             return
         }
 
-        val data = intent?.data ?: return
+        val data = intent?.data ?: intent?.clipData?.takeIf { it.itemCount > 0 }?.getItemAt(0)?.uri ?: return
 
         // Handle .mpp or APK-family file open from file manager
-        if (intent.action == Intent.ACTION_VIEW && data.scheme in listOf("file", "content")) {
+        if (intent.action == Intent.ACTION_VIEW) {
             if (data.hasMppExtension(contentResolver)) {
                 vm.pendingMppUri = data
             } else {
