@@ -1056,14 +1056,9 @@ class PatchFlow(
         // dialog offers those back, so it has to be told what it is hiding
         val availableBundles = withContext(Dispatchers.IO) {
             patchBundleRepository.bundleState.filterIsInstance<PatchBundleRepository.BundleState.Ready>().first()
-            val scoped = patchBundleRepository
+            patchBundleRepository
                 .scopedBundleInfoFlow(selectedApp.packageName, selectedApp.version, selectedApp.versionCode)
                 .first()
-            if (isExternalApkImport && (scoped.isEmpty() || scoped.all { it.patches.isEmpty() })) {
-                patchBundleRepository.readyBundleFlow.first().filter { it.enabled }
-            } else {
-                scoped
-            }
         }
 
         if (availableBundles.isEmpty()) {
