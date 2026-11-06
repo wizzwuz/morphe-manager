@@ -35,7 +35,8 @@ jobs:
             echo "$KEYSTORE_B64" | base64 -d > app/keystore.jks
             ls -la app/keystore.jks
           else
-            echo "No KEYSTORE_B64 secret: assembleRelease will use debug signing key"
+            echo "Using committed keystore: app/keystore.jks"
+            ls -la app/keystore.jks || true
           fi
 
       - name: Setup Java
@@ -75,9 +76,9 @@ jobs:
       - name: Build APK
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          KEYSTORE_PASSWORD: ${{ secrets.KEYSTORE_PASSWORD }}
-          KEYSTORE_ENTRY_ALIAS: ${{ secrets.KEYSTORE_ENTRY_ALIAS }}
-          KEYSTORE_ENTRY_PASSWORD: ${{ secrets.KEYSTORE_ENTRY_PASSWORD }}
+          KEYSTORE_PASSWORD: ${{ secrets.KEYSTORE_PASSWORD || 'android' }}
+          KEYSTORE_ENTRY_ALIAS: ${{ secrets.KEYSTORE_ENTRY_ALIAS || 'androiddebugkey' }}
+          KEYSTORE_ENTRY_PASSWORD: ${{ secrets.KEYSTORE_ENTRY_PASSWORD || 'android' }}
           _JAVA_OPTIONS: "-Djava.awt.headless=true"
         run: |
           chmod +x ./gradlew

@@ -288,9 +288,9 @@ android {
             } else {
                 signingConfigs.create("release") {
                     storeFile = keystoreFile
-                    storePassword = System.getenv("KEYSTORE_PASSWORD")
-                    keyAlias = System.getenv("KEYSTORE_ENTRY_ALIAS")
-                    keyPassword = System.getenv("KEYSTORE_ENTRY_PASSWORD")
+                    storePassword = System.getenv("KEYSTORE_PASSWORD") ?: "android"
+                    keyAlias = System.getenv("KEYSTORE_ENTRY_ALIAS") ?: "androiddebugkey"
+                    keyPassword = System.getenv("KEYSTORE_ENTRY_PASSWORD") ?: "android"
                 }
             }
 
