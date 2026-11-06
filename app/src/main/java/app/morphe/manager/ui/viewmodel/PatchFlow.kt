@@ -186,6 +186,7 @@ class PatchFlow(
     private val patchSelectionRepository: PatchSelectionRepository,
     private val sourceMuteRepository: SourceMuteRepository,
     private val optionsRepository: PatchOptionsRepository,
+    private val patchOptionsPrefs: PatchOptionsPreferencesManager,
     private val networkInfo: NetworkInfo,
     private val prefs: PreferencesManager,
     private val pm: PM,
@@ -218,8 +219,6 @@ class PatchFlow(
     var processingApkSelection by mutableStateOf(false)
         private set
 
-    var isExternalApkImport by mutableStateOf(false)
-
     var loadingInstalledApps by mutableStateOf(false)
         private set
     var installedAppsForPicker by mutableStateOf<List<InstalledAppPickerItem>>(emptyList())
@@ -233,6 +232,8 @@ class PatchFlow(
     private var heldApp: SelectedApp? = null
     // Whether the run of the held APK reaches patches that declare other app versions
     private var heldAllowsIncompatible = false
+
+    private var isExternalApkImport = false
 
     // The patching held back by a guard dialog until the user answers it
     private var pendingPatchAction: (suspend () -> Unit)? = null
@@ -1015,17 +1016,15 @@ class PatchFlow(
     }
 
     /**
-     * Starts patching in the mode the run is set up for. A rooted device asks for it first while
-     * the installer prompt is on, and otherwise mounts whenever root mount is the default
-     * installer. Anywhere else the build is a standard one, its installer asked for after patching.
+     * Starts patching in the mode the run is set up for. A rooted device asks for it first or
+     * follows its patch mode, while anywhere else the build is a standard one.
      */
     private suspend fun startPatchingInPatchMode(selectedApp: SelectedApp, allowIncompatible: Boolean) {
         if (installerManager.promptsBeforePatching() && !isExternalApkImport) {
             holdFor(HomeDialog.PrePatchInstaller, selectedApp, allowIncompatible)
             return
         }
-        usingMountInstall = rootInstaller.isDeviceRooted() &&
-                installerManager.parseToken(prefs.installerPrimary.get()).isRootMount
+        usingMountInstall = installerManager.mountsByDefault()
         startPatchingWithApp(selectedApp, allowIncompatible)
     }
 
@@ -1055,42 +1054,23 @@ class PatchFlow(
 
         // Everything this app has patches in, the sources it is kept from included: the expert
         // dialog offers those back, so it has to be told what it is hiding
-        var availableBundles = withContext(Dispatchers.IO) {
+        val availableBundles = withContext(Dispatchers.IO) {
             patchBundleRepository.bundleState.filterIsInstance<PatchBundleRepository.BundleState.Ready>().first()
-            patchBundleRepository
+            val scoped = patchBundleRepository
                 .scopedBundleInfoFlow(selectedApp.packageName, selectedApp.version, selectedApp.versionCode)
                 .first()
+            if (isExternalApkImport && (scoped.isEmpty() || scoped.all { it.patches.isEmpty() })) {
+                patchBundleRepository.readyBundleFlow.first().filter { it.enabled }
+            } else {
+                scoped
+            }
         }
 
-        if (availableBundles.isEmpty() || availableBundles.all { it.patches.isEmpty() }) {
-            if (isExternalApkImport) {
-                availableBundles = withContext(Dispatchers.IO) {
-                    patchBundleRepository.bundleInfoFlow.first().map { (_, info) ->
-                        PatchBundleInfo.Scoped(
-                            name = info.name,
-                            version = info.version,
-                            uid = info.uid,
-                            enabled = info.enabled,
-                            patches = info.patches,
-                            compatible = info.patches,
-                            incompatible = emptyList(),
-                            universal = info.patches,
-                            isVersionExperimental = false,
-                            targetsVersion = false,
-                            appIconColor = null,
-                            apkFileType = null,
-                            displayName = info.name,
-                            signatures = null,
-                            patcherVersion = info.patcherVersion
-                        )
-                    }
-                }
-            } else {
-                messages.show(R.string.home_no_patches_available)
-                selectedApp.discard()
-                endRun()
-                return
-            }
+        if (availableBundles.isEmpty()) {
+            messages.show(R.string.home_no_patches_available)
+            selectedApp.discard()
+            endRun()
+            return
         }
 
         // A source picked by hand answers for the run alone, so the others are held back the way
@@ -1248,6 +1228,22 @@ class PatchFlow(
             .filter { (_, patches) -> patches.isNotEmpty() }
         val runScope = allBundles.mapTo(mutableSetOf()) { it.uid }
 
+        // Patches simple mode picked go with the options it keeps per app, while a selection
+        // made by hand carries its own, see proceedExpertMode
+        suspend fun proceedWithSimpleSelection(patches: PatchSelection, allowIncompatible: Boolean) {
+            val options = withContext(Dispatchers.IO) {
+                patchOptionsPrefs.exportPatchOptions(selectedApp.packageName)
+            }
+            proceedWithPatching(
+                selectedApp,
+                target.applyTo(patches, allBundles),
+                options,
+                selectedByHand = false,
+                allowIncompatible,
+                runScope
+            )
+        }
+
         if (bundleWithPatches.isEmpty()) {
             // No patches have include=true (use=true in the bundle JSON).
             // This is the case for third-party bundles where all universal patches
@@ -1269,8 +1265,7 @@ class PatchFlow(
                 .filter(target::defaultSelected)
                 .mapTo(mutableSetOf()) { it.name }
             if (patchNames.isNotEmpty()) {
-                val patches = target.applyTo(mapOf(bundle.uid to patchNames), allBundles)
-                proceedWithPatching(selectedApp, patches, emptyMap(), allowIncompatible = true, runScope)
+                proceedWithSimpleSelection(mapOf(bundle.uid to patchNames), allowIncompatible = true)
                 return
             }
             // Pre-selected bundle has no patches at all - fall through
@@ -1283,12 +1278,10 @@ class PatchFlow(
         }
 
         // Only one bundle has patches - use it directly (no prompt needed)
-        val patches = target.applyTo(
+        proceedWithSimpleSelection(
             bundleWithPatches.associate { (bundle, patches) -> bundle.uid to patches },
-            allBundles
+            allowIncompatible
         )
-
-        proceedWithPatching(selectedApp, patches, emptyMap(), allowIncompatible, runScope)
     }
 
     /**
@@ -1311,6 +1304,7 @@ class PatchFlow(
         selectedApp: SelectedApp,
         patches: PatchSelection,
         options: Options,
+        selectedByHand: Boolean,
         allowIncompatible: Boolean,
         scope: Set<Int>
     ) {
@@ -1319,6 +1313,7 @@ class PatchFlow(
                 selectedApp = selectedApp,
                 selectedPatches = patches,
                 options = options,
+                selectedByHand = selectedByHand,
                 sourceScope = scope,
                 // Handed over before the run is let go of below, since the patcher has no other
                 // way to learn which install it was started for
@@ -1402,7 +1397,7 @@ class PatchFlow(
                 }
             }
 
-        proceedWithPatching(selectedApp, finalPatches, patcherOptions, allowIncompatible, scope)
+        proceedWithPatching(selectedApp, finalPatches, patcherOptions, selectedByHand = true, allowIncompatible, scope)
         expertMode.clear()
     }
 
@@ -1606,6 +1601,7 @@ class PatchFlow(
         heldApp?.discard()
         heldApp = null
         session = null
+        isExternalApkImport = false
         dialogs.closeAll { it !is HomeDialog.AppInfo }
     }
 
@@ -1642,28 +1638,33 @@ class PatchFlow(
 
             // A split archive is read through its base module, deleted after the call, so the icon
             // and the label are read in it
-            val result = SplitApkInspector.withRepresentativeApk(
-                source = tempFile,
-                workspace = filesystem.uiTempDir
-            ) { apk ->
-                val packageInfo = pm.getPackageInfo(apk)
-                when {
-                    packageInfo == null -> ApkLoadResult.NotAnApk
-                    localApkSources.isPatchedApk(apk, packageInfo.packageName) -> ApkLoadResult.AlreadyPatched
-                    else -> ApkLoadResult.Success(
-                        SelectedApp.Local(
-                            packageName = packageInfo.packageName,
-                            version = packageInfo.versionName ?: "unknown",
-                            versionCode = pm.getVersionCode(packageInfo),
-                            file = tempFile,
-                            temporary = true
-                        ),
-                        icon = runCatching { appDataResolver.detachedArchiveIcon(packageInfo) }.getOrNull(),
-                        label = runCatching { packageInfo.readableLabel(app.packageManager) }.getOrNull()
-                            ?: packageInfo.applicationInfo?.nonLocalizedLabel?.toString()
-                            ?: packageInfo.packageName
-                    )
+            val result = runCatching {
+                SplitApkInspector.withRepresentativeApk(
+                    source = tempFile,
+                    workspace = filesystem.uiTempDir
+                ) { apk ->
+                    val packageInfo = pm.getPackageInfo(apk)
+                    when {
+                        packageInfo == null -> ApkLoadResult.NotAnApk
+                        localApkSources.isPatchedApk(apk, packageInfo.packageName) -> ApkLoadResult.AlreadyPatched
+                        else -> ApkLoadResult.Success(
+                            SelectedApp.Local(
+                                packageName = packageInfo.packageName,
+                                version = packageInfo.versionName ?: "unknown",
+                                versionCode = pm.getVersionCode(packageInfo),
+                                file = tempFile,
+                                temporary = true
+                            ),
+                            icon = runCatching { appDataResolver.detachedArchiveIcon(packageInfo) }.getOrNull(),
+                            label = runCatching { packageInfo.readableLabel(app.packageManager) }.getOrNull()
+                                ?: packageInfo.applicationInfo?.nonLocalizedLabel?.toString()
+                                ?: packageInfo.packageName
+                        )
+                    }
                 }
+            }.getOrElse { e ->
+                Log.e(tag, "Failed to parse APK archive", e)
+                ApkLoadResult.NotAnApk
             }
 
             if (result == ApkLoadResult.NotAnApk) {

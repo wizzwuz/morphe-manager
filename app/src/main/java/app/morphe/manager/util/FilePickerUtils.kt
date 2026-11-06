@@ -119,7 +119,7 @@ fun Uri.copyApkInto(dir: File, prefix: String, contentResolver: ContentResolver)
     } catch (e: Exception) {
         Log.e("FilePickerUtils", "Failed to copy APK from $this", e)
         target.delete()
-        throw e
+        null
     }
     if (copied == null || copied == 0L) {
         target.delete()
