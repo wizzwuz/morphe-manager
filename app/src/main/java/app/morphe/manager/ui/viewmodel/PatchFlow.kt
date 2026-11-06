@@ -186,6 +186,7 @@ class PatchFlow(
     private val patchSelectionRepository: PatchSelectionRepository,
     private val sourceMuteRepository: SourceMuteRepository,
     private val optionsRepository: PatchOptionsRepository,
+    private val patchOptionsPrefs: PatchOptionsPreferencesManager,
     private val networkInfo: NetworkInfo,
     private val prefs: PreferencesManager,
     private val pm: PM,
@@ -1012,17 +1013,15 @@ class PatchFlow(
     }
 
     /**
-     * Starts patching in the mode the run is set up for. A rooted device asks for it first while
-     * the installer prompt is on, and otherwise mounts whenever root mount is the default
-     * installer. Anywhere else the build is a standard one, its installer asked for after patching.
+     * Starts patching in the mode the run is set up for. A rooted device asks for it first or
+     * follows its patch mode, while anywhere else the build is a standard one.
      */
     private suspend fun startPatchingInPatchMode(selectedApp: SelectedApp, allowIncompatible: Boolean) {
         if (installerManager.promptsBeforePatching()) {
             holdFor(HomeDialog.PrePatchInstaller, selectedApp, allowIncompatible)
             return
         }
-        usingMountInstall = rootInstaller.isDeviceRooted() &&
-                installerManager.parseToken(prefs.installerPrimary.get()).isRootMount
+        usingMountInstall = installerManager.mountsByDefault()
         startPatchingWithApp(selectedApp, allowIncompatible)
     }
 
@@ -1221,6 +1220,22 @@ class PatchFlow(
             .filter { (_, patches) -> patches.isNotEmpty() }
         val runScope = allBundles.mapTo(mutableSetOf()) { it.uid }
 
+        // Patches simple mode picked go with the options it keeps per app, while a selection
+        // made by hand carries its own, see proceedExpertMode
+        suspend fun proceedWithSimpleSelection(patches: PatchSelection, allowIncompatible: Boolean) {
+            val options = withContext(Dispatchers.IO) {
+                patchOptionsPrefs.exportPatchOptions(selectedApp.packageName)
+            }
+            proceedWithPatching(
+                selectedApp,
+                target.applyTo(patches, allBundles),
+                options,
+                selectedByHand = false,
+                allowIncompatible,
+                runScope
+            )
+        }
+
         if (bundleWithPatches.isEmpty()) {
             // No patches have include=true (use=true in the bundle JSON).
             // This is the case for third-party bundles where all universal patches
@@ -1242,8 +1257,7 @@ class PatchFlow(
                 .filter(target::defaultSelected)
                 .mapTo(mutableSetOf()) { it.name }
             if (patchNames.isNotEmpty()) {
-                val patches = target.applyTo(mapOf(bundle.uid to patchNames), allBundles)
-                proceedWithPatching(selectedApp, patches, emptyMap(), allowIncompatible = true, runScope)
+                proceedWithSimpleSelection(mapOf(bundle.uid to patchNames), allowIncompatible = true)
                 return
             }
             // Pre-selected bundle has no patches at all - fall through
@@ -1256,12 +1270,10 @@ class PatchFlow(
         }
 
         // Only one bundle has patches - use it directly (no prompt needed)
-        val patches = target.applyTo(
+        proceedWithSimpleSelection(
             bundleWithPatches.associate { (bundle, patches) -> bundle.uid to patches },
-            allBundles
+            allowIncompatible
         )
-
-        proceedWithPatching(selectedApp, patches, emptyMap(), allowIncompatible, runScope)
     }
 
     /**
@@ -1284,6 +1296,7 @@ class PatchFlow(
         selectedApp: SelectedApp,
         patches: PatchSelection,
         options: Options,
+        selectedByHand: Boolean,
         allowIncompatible: Boolean,
         scope: Set<Int>
     ) {
@@ -1292,6 +1305,7 @@ class PatchFlow(
                 selectedApp = selectedApp,
                 selectedPatches = patches,
                 options = options,
+                selectedByHand = selectedByHand,
                 sourceScope = scope,
                 // Handed over before the run is let go of below, since the patcher has no other
                 // way to learn which install it was started for
@@ -1375,7 +1389,7 @@ class PatchFlow(
                 }
             }
 
-        proceedWithPatching(selectedApp, finalPatches, patcherOptions, allowIncompatible, scope)
+        proceedWithPatching(selectedApp, finalPatches, patcherOptions, selectedByHand = true, allowIncompatible, scope)
         expertMode.clear()
     }
 
