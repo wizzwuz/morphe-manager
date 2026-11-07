@@ -37,6 +37,8 @@ import app.morphe.manager.patcher.patch.PatchBundleInfo
 import app.morphe.manager.patcher.patch.PatchInfo
 import app.morphe.manager.ui.screen.shared.DialogHost
 import app.morphe.manager.ui.screen.shared.FilePicker
+import android.content.ContentUris
+import android.os.ParcelFileDescriptor
 import app.morphe.manager.ui.screen.shared.UserMessages
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
@@ -122,13 +124,22 @@ fun Uri.displayName(contentResolver: ContentResolver): String? =
  * shown under. Null when the provider has nothing to read, and a copy cut short is deleted.
  */
 fun Uri.copyApkInto(dir: File, prefix: String, contentResolver: ContentResolver): File? {
-    // If it's already a file inside target directory, reuse it directly
+    dir.mkdirs()
+
+    // 0. If it's already a file inside target directory, reuse it directly
     if (scheme == "file") {
         val rawPath = path
         val decodedPath = rawPath?.let { Uri.decode(it) } ?: Uri.decode(toString().removePrefix("file://"))
         for (candidatePath in listOfNotNull(rawPath, decodedPath)) {
             val f = File(candidatePath)
-            if (f.exists() && f.length() > 0L && f.parentFile?.canonicalPath == dir.canonicalPath) {
+            if (f.exists() && f.length() > 0L && (
+                f.parentFile?.canonicalPath == dir.canonicalPath ||
+                f.parentFile?.absolutePath == dir.absolutePath ||
+                f.parentFile?.name == dir.name ||
+                f.parentFile?.name == "app_ui_ephemeral" ||
+                f.canonicalPath.startsWith(dir.canonicalPath) ||
+                f.absolutePath.startsWith(dir.absolutePath)
+            )) {
                 return f
             }
         }
@@ -144,8 +155,10 @@ fun Uri.copyApkInto(dir: File, prefix: String, contentResolver: ContentResolver)
     fun tryCopyStream(openStream: () -> java.io.InputStream?): Boolean {
         return try {
             val count = openStream()?.use { input ->
-                target.outputStream().use { output ->
-                    input.copyTo(output)
+                target.outputStream().buffered(65536).use { output ->
+                    val bytesCopied = input.buffered(65536).copyTo(output)
+                    output.flush()
+                    bytesCopied
                 }
             } ?: 0L
             if (count > 0L && target.exists() && target.length() > 0L) {
@@ -184,55 +197,100 @@ fun Uri.copyApkInto(dir: File, prefix: String, contentResolver: ContentResolver)
         }
     }
 
-    // If file:// scheme, open directly with File/FileInputStream
+    fun tryMediaStoreForPath(filePath: String): Boolean {
+        val projection = arrayOf(MediaStore.MediaColumns._ID)
+        val selection = "${MediaStore.MediaColumns.DATA} = ?"
+        val selectionArgs = arrayOf(filePath)
+        val baseUris = mutableListOf<Uri>()
+        runCatching { baseUris.add(MediaStore.Files.getContentUri("external")) }
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
+            runCatching { baseUris.add(MediaStore.Downloads.EXTERNAL_CONTENT_URI) }
+        }
+        for (baseContentUri in baseUris) {
+            val mediaUri = runCatching {
+                contentResolver.query(baseContentUri, projection, selection, selectionArgs, null)?.use { cursor ->
+                    if (cursor.moveToFirst()) {
+                        val id = cursor.getLong(0)
+                        ContentUris.withAppendedId(baseContentUri, id)
+                    } else null
+                }
+            }.getOrNull()
+            if (mediaUri != null) {
+                if (tryCopyStream { contentResolver.openInputStream(mediaUri) }) return true
+                if (tryCopyStream { contentResolver.openFileDescriptor(mediaUri, "r")?.let { ParcelFileDescriptor.AutoCloseInputStream(it) } }) return true
+                if (tryCopyStream { contentResolver.openAssetFileDescriptor(mediaUri, "r")?.createInputStream() }) return true
+            }
+        }
+        return false
+    }
+
+    // 1. If file:// scheme, try direct file read first
     if (scheme == "file") {
         val rawPath = path
         val decodedPath = rawPath?.let { Uri.decode(it) } ?: Uri.decode(toString().removePrefix("file://"))
-        if (tryCopyFile(rawPath?.let { File(it) }) || tryCopyFile(File(decodedPath))) {
-            return target
+        for (candidatePath in listOfNotNull(rawPath, decodedPath)) {
+            val f = File(candidatePath)
+            if (tryCopyFile(f)) return target
+            if (tryMediaStoreForPath(candidatePath)) return target
         }
     }
 
-    // 1. Standard ContentResolver openInputStream
+    // 2. Standard ContentResolver openInputStream
     if (tryCopyStream { contentResolver.openInputStream(this) }) {
         return target
     }
 
-    // 2. ContentResolver openFileDescriptor ("r")
+    // 3. ContentResolver openFileDescriptor with AutoCloseInputStream
     if (tryCopyStream {
-        contentResolver.openFileDescriptor(this, "r")?.let { FileInputStream(it.fileDescriptor) }
+        contentResolver.openFileDescriptor(this, "r")?.let { ParcelFileDescriptor.AutoCloseInputStream(it) }
     }) {
         return target
     }
 
-    // 3. toFilePath() resolution (resolves primary:... and raw:... document IDs, external_files, etc.)
-    val resolvedPath = runCatching { toFilePath() }.getOrNull()
-    if (!resolvedPath.isNullOrBlank() && resolvedPath.startsWith("/")) {
-        if (tryCopyFile(File(resolvedPath))) {
-            return target
-        }
+    // 4. ContentResolver openAssetFileDescriptor
+    if (tryCopyStream {
+        contentResolver.openAssetFileDescriptor(this, "r")?.createInputStream()
+    }) {
+        return target
     }
 
-    // 4. Query MediaStore.MediaColumns.DATA
+    // 5. ContentResolver openTypedAssetFileDescriptor
+    if (tryCopyStream {
+        contentResolver.openTypedAssetFileDescriptor(this, "*/*", null)?.createInputStream()
+    }) {
+        return target
+    }
+
+    // 6. toFilePath() resolution (primary:..., raw:..., external_files, root, storage)
+    val resolvedPath = runCatching { toFilePath() }.getOrNull()
+    if (!resolvedPath.isNullOrBlank() && resolvedPath.startsWith("/")) {
+        val f = File(resolvedPath)
+        if (tryCopyFile(f)) return target
+        if (tryMediaStoreForPath(resolvedPath)) return target
+    }
+
+    // 7. Query MediaStore.MediaColumns.DATA
     val mediaDataPath = runCatching {
         contentResolver.query(this, arrayOf(MediaStore.MediaColumns.DATA), null, null, null)?.use { cursor ->
             val idx = cursor.getColumnIndex(MediaStore.MediaColumns.DATA)
             if (idx != -1 && cursor.moveToFirst()) cursor.getString(idx) else null
         }
     }.getOrNull()
-    if (!mediaDataPath.isNullOrBlank() && tryCopyFile(File(mediaDataPath))) {
-        return target
+    if (!mediaDataPath.isNullOrBlank()) {
+        val f = File(mediaDataPath)
+        if (tryCopyFile(f)) return target
+        if (tryMediaStoreForPath(mediaDataPath)) return target
     }
 
-    // 5. Search for embedded storage path in decoded URI string
+    // 8. Search for embedded storage path in decoded URI string
     val uriStr = runCatching { Uri.decode(toString()) }.getOrDefault(toString())
     for (prefixMatch in listOf("/storage/emulated/", "/sdcard/", "/storage/")) {
         val idx = uriStr.indexOf(prefixMatch)
         if (idx != -1) {
             val extractedPath = "/" + uriStr.substring(idx).trimStart('/')
-            if (tryCopyFile(File(extractedPath))) {
-                return target
-            }
+            val f = File(extractedPath)
+            if (tryCopyFile(f)) return target
+            if (tryMediaStoreForPath(extractedPath)) return target
         }
     }
 

@@ -10,6 +10,7 @@
 
 package app.morphe.manager
 
+import android.content.ClipData
 import android.content.Context
 import android.content.Intent
 import android.content.res.Configuration
@@ -286,32 +287,28 @@ class MainActivity : ComponentActivity() {
         // The name is not checked: senders often drop or change the extension, and the file is
         // read for what it is anyway, with a message when it turns out not to be an APK
         if (intent?.action == Intent.ACTION_SEND) {
-            val uri = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
-                intent.getParcelableExtra(Intent.EXTRA_STREAM, Uri::class.java)
-            } else {
-                @Suppress("DEPRECATION")
-                intent.getParcelableExtra(Intent.EXTRA_STREAM)
-            }
-            uri?.let { cacheIncomingApkAndDispatch(it, vm) }
+            cacheIncomingApkAndDispatch(intent, vm)
             return
         }
 
-        val data = intent?.data ?: intent?.clipData?.takeIf { it.itemCount > 0 }?.getItemAt(0)?.uri ?: return
+        val data = intent?.data ?: intent?.clipData?.takeIf { it.itemCount > 0 }?.getItemAt(0)?.uri
 
         // Handle .mpp or APK-family file open from file manager
         if (intent?.action == Intent.ACTION_VIEW) {
             runCatching {
-                if (data.scheme == "content") {
+                if (data?.scheme == "content") {
                     contentResolver.takePersistableUriPermission(data, Intent.FLAG_GRANT_READ_URI_PERMISSION)
                 }
             }
-            if (data.hasMppExtension(contentResolver)) {
+            if (data != null && data.hasMppExtension(contentResolver)) {
                 vm.pendingMppUri = data
-            } else {
-                cacheIncomingApkAndDispatch(data, vm)
+            } else if (intent != null) {
+                cacheIncomingApkAndDispatch(intent, vm)
             }
             return
         }
+
+        if (data == null) return
 
         val isAddSource = data.scheme == "https" &&
                 data.host == "morphe.software" &&
@@ -330,15 +327,52 @@ class MainActivity : ComponentActivity() {
         )
     }
 
-    private fun cacheIncomingApkAndDispatch(sourceUri: Uri, vm: MainViewModel) {
+    private fun cacheIncomingApkAndDispatch(intent: Intent, vm: MainViewModel) {
+        if (intent.clipData == null && intent.data != null) {
+            intent.clipData = ClipData.newRawUri("apk", intent.data)
+        }
+
+        val candidates = LinkedHashSet<Uri>()
+        intent.data?.let { candidates.add(it) }
+        intent.clipData?.let { cd ->
+            for (i in 0 until cd.itemCount) {
+                cd.getItemAt(i)?.uri?.let { candidates.add(it) }
+            }
+        }
+        val streamUri = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
+            intent.getParcelableExtra(Intent.EXTRA_STREAM, Uri::class.java)
+        } else {
+            @Suppress("DEPRECATION")
+            intent.getParcelableExtra(Intent.EXTRA_STREAM)
+        }
+        streamUri?.let { candidates.add(it) }
+
+        for (extraKey in listOf("path", "file", "uri")) {
+            val extraVal = intent.getStringExtra(extraKey)
+            if (!extraVal.isNullOrBlank()) {
+                val parsed = runCatching {
+                    if (extraVal.startsWith("/")) Uri.fromFile(File(extraVal)) else Uri.parse(extraVal)
+                }.getOrNull()
+                if (parsed != null) candidates.add(parsed)
+            }
+        }
+
+        if (candidates.isEmpty()) return
+
         lifecycleScope.launch(Dispatchers.IO) {
-            val uiTempDir = getDir("ui_ephemeral", Context.MODE_PRIVATE)
-            val copiedFile = sourceUri.copyApkInto(uiTempDir, "temp_apk", contentResolver)
+            val uiTempDir = getDir("ui_ephemeral", Context.MODE_PRIVATE).apply { mkdirs() }
+            var copiedFile: File? = null
+            for (uri in candidates) {
+                copiedFile = uri.copyApkInto(uiTempDir, "temp_apk", contentResolver)
+                if (copiedFile != null && copiedFile.exists() && copiedFile.length() > 0L) {
+                    break
+                }
+            }
             withContext(Dispatchers.Main) {
                 vm.pendingExternalApkUri = if (copiedFile != null && copiedFile.exists()) {
                     Uri.fromFile(copiedFile)
                 } else {
-                    sourceUri
+                    candidates.first()
                 }
             }
         }

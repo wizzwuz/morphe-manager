@@ -1633,7 +1633,14 @@ class PatchFlow(
             val tempFile = if (uri.scheme == "file") {
                 val rawPath = uri.path?.let { Uri.decode(it) } ?: uri.path
                 val f = rawPath?.let { File(it) }
-                if (f != null && f.exists() && f.length() > 0L && f.parentFile?.canonicalPath == filesystem.uiTempDir.canonicalPath) {
+                if (f != null && f.exists() && f.length() > 0L && (
+                    f.parentFile?.canonicalPath == filesystem.uiTempDir.canonicalPath ||
+                    f.parentFile?.absolutePath == filesystem.uiTempDir.absolutePath ||
+                    f.parentFile?.name == filesystem.uiTempDir.name ||
+                    f.parentFile?.name == "app_ui_ephemeral" ||
+                    f.canonicalPath.startsWith(filesystem.uiTempDir.canonicalPath) ||
+                    f.absolutePath.startsWith(filesystem.uiTempDir.absolutePath)
+                )) {
                     f
                 } else {
                     uri.copyApkInto(filesystem.uiTempDir, "temp_apk", app.contentResolver)
