@@ -43,7 +43,9 @@ import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import org.koin.compose.koinInject
 import java.io.File
+import java.io.FileInputStream
 import java.util.zip.ZipInputStream
+import com.topjohnwu.superuser.Shell
 
 /** Parsed metadata from a .mpp patch bundle's META-INF/MANIFEST.MF entry. */
 data class MppManifest(
@@ -104,28 +106,117 @@ fun Uri.displayName(contentResolver: ContentResolver): String? =
  * shown under. Null when the provider has nothing to read, and a copy cut short is deleted.
  */
 fun Uri.copyApkInto(dir: File, prefix: String, contentResolver: ContentResolver): File? {
-    val rawExt = displayName(contentResolver)?.substringAfterLast('.', "apk")?.lowercase() ?: "apk"
+    val rawExt = runCatching { displayName(contentResolver) }.getOrNull()
+        ?.substringAfterLast('.', "apk")?.lowercase()
+        ?: lastPathSegment?.substringAfterLast('.', "apk")?.lowercase()
+        ?: "apk"
     val extension = if (rawExt in setOf("apk", "xapk", "apkm", "apks")) rawExt else "apk"
     val target = dir.resolve("${prefix}_${System.currentTimeMillis()}.$extension")
-    val copied = try {
-        val stream = if (scheme == "file") {
-            path?.let { java.io.FileInputStream(it) }
-        } else {
-            contentResolver.openInputStream(this)
+
+    fun tryCopyStream(openStream: () -> java.io.InputStream?): Boolean {
+        return try {
+            val count = openStream()?.use { input ->
+                target.outputStream().use { output ->
+                    input.copyTo(output)
+                }
+            } ?: 0L
+            if (count > 0L && target.exists() && target.length() > 0L) {
+                true
+            } else {
+                target.delete()
+                false
+            }
+        } catch (e: Exception) {
+            Log.w("FilePickerUtils", "Failed copying stream for $this", e)
+            target.delete()
+            false
         }
-        stream?.use { input ->
-            target.outputStream().use { output -> input.copyTo(output) }
+    }
+
+    fun tryCopyFile(file: File?): Boolean {
+        if (file == null || !file.exists()) return false
+        if (file.canRead()) {
+            if (tryCopyStream { file.inputStream() }) return true
         }
-    } catch (e: Exception) {
-        Log.e("FilePickerUtils", "Failed to copy APK from $this", e)
-        target.delete()
-        null
+        return try {
+            if (Shell.isAppGrantedRoot() == true || runCatching { Shell.cmd("id").exec().isSuccess }.getOrDefault(false)) {
+                val res = Shell.cmd(
+                    "cp '${file.absolutePath}' '${target.absolutePath}'",
+                    "chmod 644 '${target.absolutePath}'"
+                ).exec()
+                if (res.isSuccess && target.exists() && target.length() > 0L) {
+                    true
+                } else {
+                    target.delete()
+                    false
+                }
+            } else false
+        } catch (e: Exception) {
+            Log.w("FilePickerUtils", "Root copy failed for ${file.absolutePath}", e)
+            target.delete()
+            false
+        }
     }
-    if (copied == null || copied == 0L) {
-        target.delete()
-        return null
+
+    // 1. Standard ContentResolver openInputStream
+    if (tryCopyStream { contentResolver.openInputStream(this) }) {
+        return target
     }
-    return target
+
+    // 2. ContentResolver openFileDescriptor ("r")
+    if (tryCopyStream {
+        contentResolver.openFileDescriptor(this, "r")?.let { FileInputStream(it.fileDescriptor) }
+    }) {
+        return target
+    }
+
+    // 3. file:// scheme resolution
+    if (scheme == "file") {
+        val rawPath = path
+        val decodedPath = rawPath?.let { Uri.decode(it) } ?: Uri.decode(toString().removePrefix("file://"))
+        if (tryCopyFile(rawPath?.let { File(it) }) || tryCopyFile(File(decodedPath))) {
+            return target
+        }
+    }
+
+    // 4. toFilePath() resolution (resolves primary:... and raw:... document IDs)
+    val resolvedPath = runCatching { toFilePath() }.getOrNull()
+    if (!resolvedPath.isNullOrBlank() && resolvedPath.startsWith("/")) {
+        if (tryCopyFile(File(resolvedPath))) {
+            return target
+        }
+    }
+
+    // 5. Query MediaStore.MediaColumns.DATA
+    val mediaDataPath = runCatching {
+        contentResolver.query(this, arrayOf(MediaStore.MediaColumns.DATA), null, null, null)?.use { cursor ->
+            val idx = cursor.getColumnIndex(MediaStore.MediaColumns.DATA)
+            if (idx != -1 && cursor.moveToFirst()) cursor.getString(idx) else null
+        }
+    }.getOrNull()
+    if (!mediaDataPath.isNullOrBlank() && tryCopyFile(File(mediaDataPath))) {
+        return target
+    }
+
+    // 6. Search for embedded storage path in decoded URI string
+    val uriStr = runCatching { Uri.decode(toString()) }.getOrDefault(toString())
+    val storageIdx = uriStr.indexOf("/storage/emulated/")
+    if (storageIdx != -1) {
+        val extractedPath = "/" + uriStr.substring(storageIdx).trimStart('/')
+        if (tryCopyFile(File(extractedPath))) {
+            return target
+        }
+    }
+    val sdcardIdx = uriStr.indexOf("/sdcard/")
+    if (sdcardIdx != -1) {
+        val extractedPath = "/" + uriStr.substring(sdcardIdx).trimStart('/')
+        if (tryCopyFile(File(extractedPath))) {
+            return target
+        }
+    }
+
+    target.delete()
+    return null
 }
 
 /** Whether the URI names a .mpp patch bundle. */

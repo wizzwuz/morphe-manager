@@ -833,7 +833,7 @@ class HomeViewModel(
             if (!prefs.useExpertMode.get()) {
                 prefs.useExpertMode.update(true)
             }
-            patchFlow.dialogs.closeAll()
+            patchFlow.cancel()
             // Wait for patch bundle repository to load cached sources from local database
             withTimeoutOrNull(5.seconds) {
                 patchBundleRepository.bundleState.filterIsInstance<PatchBundleRepository.BundleState.Ready>().first()

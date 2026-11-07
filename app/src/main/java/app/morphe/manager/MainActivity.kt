@@ -298,38 +298,15 @@ class MainActivity : ComponentActivity() {
 
         // Handle .mpp or APK-family file open from file manager
         if (intent?.action == Intent.ACTION_VIEW) {
+            runCatching {
+                if (data.scheme == "content") {
+                    contentResolver.takePersistableUriPermission(data, Intent.FLAG_GRANT_READ_URI_PERMISSION)
+                }
+            }
             if (data.hasMppExtension(contentResolver)) {
                 vm.pendingMppUri = data
             } else {
-                val safeUri = try {
-                    val stream = runCatching {
-                        if (data.scheme == "file") {
-                            data.path?.let { File(it).takeIf { f -> f.exists() && f.canRead() }?.inputStream() }
-                        } else {
-                            contentResolver.openInputStream(data)
-                        }
-                    }.getOrNull() ?: runCatching {
-                        intent.clipData?.takeIf { it.itemCount > 0 }?.getItemAt(0)?.uri?.let { clipUri ->
-                            contentResolver.openInputStream(clipUri)
-                        }
-                    }.getOrNull()
-
-                    if (stream != null) {
-                        val tempDir = File(cacheDir, "incoming_apks").apply { mkdirs() }
-                        val rawName = data.displayName(contentResolver) ?: data.lastPathSegment ?: ""
-                        val rawExt = rawName.substringAfterLast('.', "apk").lowercase()
-                        val ext = if (rawExt in setOf("apk", "xapk", "apkm", "apks")) rawExt else "apk"
-                        val tempFile = File(tempDir, "opened_apk_${System.currentTimeMillis()}.$ext")
-                        stream.use { input ->
-                            tempFile.outputStream().use { output -> input.copyTo(output) }
-                        }
-                        if (tempFile.length() > 0) Uri.fromFile(tempFile) else data
-                    } else data
-                } catch (e: Exception) {
-                    Log.e(tag, "Failed to cache incoming APK in MainActivity", e)
-                    data
-                }
-                vm.pendingExternalApkUri = safeUri
+                vm.pendingExternalApkUri = data
             }
             return
         }

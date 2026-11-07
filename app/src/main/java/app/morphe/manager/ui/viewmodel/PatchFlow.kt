@@ -698,13 +698,15 @@ class PatchFlow(
                 when (result) {
                     is ApkLoadResult.Success -> {
                         pickedApk = result
-                        // A run for any app is named by the section it started from until the file
-                        // says which app it is, as the installed app picker names it by its label
-                        session = session?.let { current ->
-                            if (current.packageName == null) {
-                                current.copy(appName = appNameFor(result.app.packageName))
-                            } else current
-                        } ?: PatchFlowSession(packageName = result.app.packageName, appName = appNameFor(result.app.packageName))
+                        session = if (isExternalApkImport) {
+                            PatchFlowSession(packageName = result.app.packageName, appName = appNameFor(result.app.packageName))
+                        } else {
+                            session?.let { current ->
+                                if (current.packageName == null) {
+                                    current.copy(appName = appNameFor(result.app.packageName))
+                                } else current
+                            } ?: PatchFlowSession(packageName = result.app.packageName, appName = appNameFor(result.app.packageName))
+                        }
                         // Picked in place of the one held for a warning, which it takes the run over from
                         heldApp?.discard()
                         heldApp = null
@@ -787,7 +789,7 @@ class PatchFlow(
     ) {
         // Validate package name if expected (known-app flow sets the session's package)
         val expectedPackage = session?.packageName
-        if (expectedPackage != null && selectedApp.packageName != expectedPackage) {
+        if (expectedPackage != null && selectedApp.packageName != expectedPackage && !isExternalApkImport) {
             selectedApp.discard()
             endRun()
             dialogs.open(
@@ -810,7 +812,7 @@ class PatchFlow(
 
             val isSplitFile = SplitApkPreparer.isSplitArchive(selectedApp.file)
 
-            if (isSplitFile && requiredApkFileType?.isApk == true && requiredApkFileType.isRequired) {
+            if (isSplitFile && requiredApkFileType?.isApk == true && requiredApkFileType.isRequired && !isExternalApkImport) {
                 holdFor(HomeDialog.SplitApkWarning(selectedApp.packageName), selectedApp)
                 return
             }
