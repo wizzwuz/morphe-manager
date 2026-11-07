@@ -75,16 +75,32 @@ fun Uri.toFilePath(): String {
             runCatching { DocumentsContract.getDocumentId(this) }.getOrNull()
     }
 
-    return when {
-        // "primary:Download/subfolder" → "/storage/emulated/<user>/Download/subfolder", the user
-        // being whoever runs the manager, as a work profile or second user has storage of its own
-        docId?.startsWith("primary:") == true ->
-            "${Environment.getExternalStorageDirectory().absolutePath}/${docId.removePrefix("primary:")}"
-        // "raw:/storage/emulated/0/Download/file" → "/storage/emulated/0/Download/file"
-        docId?.startsWith("raw:") == true ->
-            docId.removePrefix("raw:")
-        else -> Uri.decode(this.toString())
+    if (docId?.startsWith("primary:") == true) {
+        return "${Environment.getExternalStorageDirectory().absolutePath}/${docId.removePrefix("primary:")}"
     }
+    if (docId?.startsWith("raw:") == true) {
+        return docId.removePrefix("raw:")
+    }
+
+    val decoded = Uri.decode(toString())
+    val externalFilesIdx = decoded.indexOf("/external_files/")
+    if (externalFilesIdx != -1) {
+        val sub = decoded.substring(externalFilesIdx + "/external_files/".length)
+        val p = "${Environment.getExternalStorageDirectory().absolutePath}/$sub"
+        if (File(p).exists()) return p
+    }
+    val rootIdx = decoded.indexOf("/root/")
+    if (rootIdx != -1) {
+        val sub = "/" + decoded.substring(rootIdx + "/root/".length).trimStart('/')
+        if (File(sub).exists()) return sub
+    }
+    val storageIdx = decoded.indexOf("/storage/")
+    if (storageIdx != -1) {
+        val p = "/" + decoded.substring(storageIdx).trimStart('/')
+        if (File(p).exists()) return p
+    }
+
+    return decoded
 }
 
 /** The name a URI is shown under, or its last path segment where the provider gives none. */
@@ -106,6 +122,18 @@ fun Uri.displayName(contentResolver: ContentResolver): String? =
  * shown under. Null when the provider has nothing to read, and a copy cut short is deleted.
  */
 fun Uri.copyApkInto(dir: File, prefix: String, contentResolver: ContentResolver): File? {
+    // If it's already a file inside target directory, reuse it directly
+    if (scheme == "file") {
+        val rawPath = path
+        val decodedPath = rawPath?.let { Uri.decode(it) } ?: Uri.decode(toString().removePrefix("file://"))
+        for (candidatePath in listOfNotNull(rawPath, decodedPath)) {
+            val f = File(candidatePath)
+            if (f.exists() && f.length() > 0L && f.parentFile?.canonicalPath == dir.canonicalPath) {
+                return f
+            }
+        }
+    }
+
     val rawExt = runCatching { displayName(contentResolver) }.getOrNull()
         ?.substringAfterLast('.', "apk")?.lowercase()
         ?: lastPathSegment?.substringAfterLast('.', "apk")?.lowercase()
@@ -127,7 +155,6 @@ fun Uri.copyApkInto(dir: File, prefix: String, contentResolver: ContentResolver)
                 false
             }
         } catch (e: Exception) {
-            Log.w("FilePickerUtils", "Failed copying stream for $this", e)
             target.delete()
             false
         }
@@ -152,9 +179,17 @@ fun Uri.copyApkInto(dir: File, prefix: String, contentResolver: ContentResolver)
                 }
             } else false
         } catch (e: Exception) {
-            Log.w("FilePickerUtils", "Root copy failed for ${file.absolutePath}", e)
             target.delete()
             false
+        }
+    }
+
+    // If file:// scheme, open directly with File/FileInputStream
+    if (scheme == "file") {
+        val rawPath = path
+        val decodedPath = rawPath?.let { Uri.decode(it) } ?: Uri.decode(toString().removePrefix("file://"))
+        if (tryCopyFile(rawPath?.let { File(it) }) || tryCopyFile(File(decodedPath))) {
+            return target
         }
     }
 
@@ -170,16 +205,7 @@ fun Uri.copyApkInto(dir: File, prefix: String, contentResolver: ContentResolver)
         return target
     }
 
-    // 3. file:// scheme resolution
-    if (scheme == "file") {
-        val rawPath = path
-        val decodedPath = rawPath?.let { Uri.decode(it) } ?: Uri.decode(toString().removePrefix("file://"))
-        if (tryCopyFile(rawPath?.let { File(it) }) || tryCopyFile(File(decodedPath))) {
-            return target
-        }
-    }
-
-    // 4. toFilePath() resolution (resolves primary:... and raw:... document IDs)
+    // 3. toFilePath() resolution (resolves primary:... and raw:... document IDs, external_files, etc.)
     val resolvedPath = runCatching { toFilePath() }.getOrNull()
     if (!resolvedPath.isNullOrBlank() && resolvedPath.startsWith("/")) {
         if (tryCopyFile(File(resolvedPath))) {
@@ -187,7 +213,7 @@ fun Uri.copyApkInto(dir: File, prefix: String, contentResolver: ContentResolver)
         }
     }
 
-    // 5. Query MediaStore.MediaColumns.DATA
+    // 4. Query MediaStore.MediaColumns.DATA
     val mediaDataPath = runCatching {
         contentResolver.query(this, arrayOf(MediaStore.MediaColumns.DATA), null, null, null)?.use { cursor ->
             val idx = cursor.getColumnIndex(MediaStore.MediaColumns.DATA)
@@ -198,20 +224,15 @@ fun Uri.copyApkInto(dir: File, prefix: String, contentResolver: ContentResolver)
         return target
     }
 
-    // 6. Search for embedded storage path in decoded URI string
+    // 5. Search for embedded storage path in decoded URI string
     val uriStr = runCatching { Uri.decode(toString()) }.getOrDefault(toString())
-    val storageIdx = uriStr.indexOf("/storage/emulated/")
-    if (storageIdx != -1) {
-        val extractedPath = "/" + uriStr.substring(storageIdx).trimStart('/')
-        if (tryCopyFile(File(extractedPath))) {
-            return target
-        }
-    }
-    val sdcardIdx = uriStr.indexOf("/sdcard/")
-    if (sdcardIdx != -1) {
-        val extractedPath = "/" + uriStr.substring(sdcardIdx).trimStart('/')
-        if (tryCopyFile(File(extractedPath))) {
-            return target
+    for (prefixMatch in listOf("/storage/emulated/", "/sdcard/", "/storage/")) {
+        val idx = uriStr.indexOf(prefixMatch)
+        if (idx != -1) {
+            val extractedPath = "/" + uriStr.substring(idx).trimStart('/')
+            if (tryCopyFile(File(extractedPath))) {
+                return target
+            }
         }
     }
 

@@ -1630,8 +1630,17 @@ class PatchFlow(
      */
     private suspend fun loadLocalApk(uri: Uri): ApkLoadResult = withContext(Dispatchers.IO) {
         try {
-            val tempFile = uri.copyApkInto(filesystem.uiTempDir, "temp_apk", app.contentResolver)
-                ?: return@withContext ApkLoadResult.Unreadable
+            val tempFile = if (uri.scheme == "file") {
+                val rawPath = uri.path?.let { Uri.decode(it) } ?: uri.path
+                val f = rawPath?.let { File(it) }
+                if (f != null && f.exists() && f.length() > 0L && f.parentFile?.canonicalPath == filesystem.uiTempDir.canonicalPath) {
+                    f
+                } else {
+                    uri.copyApkInto(filesystem.uiTempDir, "temp_apk", app.contentResolver)
+                }
+            } else {
+                uri.copyApkInto(filesystem.uiTempDir, "temp_apk", app.contentResolver)
+            } ?: return@withContext ApkLoadResult.Unreadable
 
             // A split archive is read through its base module, deleted after the call, so the icon
             // and the label are read in it

@@ -79,8 +79,10 @@ import app.morphe.manager.ui.viewmodel.PatcherViewModel
 import app.morphe.manager.util.*
 import dev.chrisbanes.haze.hazeSource
 import dev.chrisbanes.haze.rememberHazeState
+import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
 import org.koin.androidx.compose.koinViewModel
 import org.koin.compose.koinInject
 import org.koin.core.context.GlobalContext
@@ -290,7 +292,7 @@ class MainActivity : ComponentActivity() {
                 @Suppress("DEPRECATION")
                 intent.getParcelableExtra(Intent.EXTRA_STREAM)
             }
-            uri?.let { vm.pendingExternalApkUri = it }
+            uri?.let { cacheIncomingApkAndDispatch(it, vm) }
             return
         }
 
@@ -306,7 +308,7 @@ class MainActivity : ComponentActivity() {
             if (data.hasMppExtension(contentResolver)) {
                 vm.pendingMppUri = data
             } else {
-                vm.pendingExternalApkUri = data
+                cacheIncomingApkAndDispatch(data, vm)
             }
             return
         }
@@ -326,6 +328,20 @@ class MainActivity : ComponentActivity() {
             name = param("name"),
             scope = SourceScope.fromLink(app = param("app"), appName = param("appName"))
         )
+    }
+
+    private fun cacheIncomingApkAndDispatch(sourceUri: Uri, vm: MainViewModel) {
+        lifecycleScope.launch(Dispatchers.IO) {
+            val uiTempDir = getDir("ui_ephemeral", Context.MODE_PRIVATE)
+            val copiedFile = sourceUri.copyApkInto(uiTempDir, "temp_apk", contentResolver)
+            withContext(Dispatchers.Main) {
+                vm.pendingExternalApkUri = if (copiedFile != null && copiedFile.exists()) {
+                    Uri.fromFile(copiedFile)
+                } else {
+                    sourceUri
+                }
+            }
+        }
     }
 
     companion object {
