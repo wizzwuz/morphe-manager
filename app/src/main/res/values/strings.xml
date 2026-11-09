@@ -1465,6 +1465,8 @@ Details: %2$s"</string>
     <string name="state_not_selected">Not selected</string>
     <string name="select_all">Select all</string>
     <string name="deselect_all">Deselect all</string>
+    <string name="select_none">Select none</string>
+    <string name="select_options">Select options</string>
     <string name="reorder_list">Reorder list</string>
     <string name="reorder_list_hint">Drag to reorder</string>
     <string name="reorder_done">Order saved</string>

@@ -175,7 +175,9 @@ fun DialogHostScope.ExpertModeDialog(
     val selectedPatchForOptions = remember { mutableStateOf<Pair<Int, PatchInfo>?>(null) }
     val search = rememberSearchFieldState()
     val showMultipleSourcesWarning = remember { mutableStateOf(false) }
+    val showUniversalAllWarning = remember { mutableStateOf(false) }
     val messages = koinInject<UserMessages>()
+    val pendingUniversalMessage = stringResource(R.string.expert_mode_enable_all_universal_pending)
 
     // Both markers are keyed by bundle, since the same patch name can come from several sources
     // with values of its own. Recomputed whenever the selected patches or options change
@@ -374,6 +376,51 @@ fun DialogHostScope.ExpertModeDialog(
                     }
                 } else null
             ) {
+                // Drop-down button for patch selection of current patch source
+                headBundle?.let { bundle ->
+                    val patches = filteredPatchesByUid[bundle.uid].orEmpty()
+                    val holdsUniversal = holdsUniversalPatches(bundle.uid, patches)
+                    val warnOnUniversalAll = !holdsUniversal && patches.hasUniversalToEnable(lockStateOf)
+
+                    val selectAll = {
+                        if (!holdsUniversal) patchSections.setExpanded(bundle.uid, UNIVERSAL_GROUP_KEY, true)
+                        patchActions.onSelectAll(bundle.uid, patches)
+                        if (holdsUniversal) messages.show(pendingUniversalMessage)
+                    }
+
+                    var showDropdownMenu by remember { mutableStateOf(false) }
+
+                    Box {
+                        TitleAction(
+                            icon = MaterialSymbols.Rounded.Arrow_drop_down,
+                            contentDescription = stringResource(R.string.select_options),
+                            onClick = { showDropdownMenu = true },
+                            style = TitleActionStyle.Toggle,
+                            active = showDropdownMenu
+                        )
+                        AppDropdownMenu(
+                            expanded = showDropdownMenu,
+                            onDismissRequest = { showDropdownMenu = false }
+                        ) {
+                            AppDropdownMenuItem(
+                                text = stringResource(R.string.select_all),
+                                leadingIcon = MaterialSymbols.Rounded.Done_all,
+                                onClick = {
+                                    showDropdownMenu = false
+                                    if (warnOnUniversalAll) showUniversalAllWarning.value = true else selectAll()
+                                }
+                            )
+                            AppDropdownMenuItem(
+                                text = stringResource(R.string.select_none),
+                                leadingIcon = MaterialSymbols.Rounded.Remove_done,
+                                onClick = {
+                                    showDropdownMenu = false
+                                    patchActions.onDeselectAll(bundle.uid, patches)
+                                }
+                            )
+                        }
+                    }
+                }
                 // Narrows how the list is shown rather than what is selected, so it stays in view
                 // while it is on rather than in the panel, which closes
                 val filterState = stringResource(
@@ -564,6 +611,25 @@ fun DialogHostScope.ExpertModeDialog(
                 onProceed()
             },
             onDismiss = { showMultipleSourcesWarning.value = false }
+        )
+    }
+
+    // Universal patches bulk enable warning dialog
+    DialogHost(visible = showUniversalAllWarning.value) {
+        ConfirmDialog(
+            title = stringResource(R.string.expert_mode_universal_all_warning_title),
+            message = stringResource(R.string.expert_mode_universal_all_warning_message),
+            primaryText = stringResource(R.string.enable),
+            isPrimaryDestructive = false,
+            onDismiss = { showUniversalAllWarning.value = false },
+            onConfirm = {
+                showUniversalAllWarning.value = false
+                headBundle?.let { bundle ->
+                    val patches = filteredPatchesByUid[bundle.uid].orEmpty()
+                    patchSections.setExpanded(bundle.uid, UNIVERSAL_GROUP_KEY, true)
+                    patchActions.onSelectAll(bundle.uid, patches)
+                }
+            }
         )
     }
 
